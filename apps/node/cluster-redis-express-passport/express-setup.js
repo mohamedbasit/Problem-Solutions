@@ -1,75 +1,105 @@
 const express = require('express');
 const passport = require('passport');
+const createLocalStrategy = require('./strategy');
 const redisClient = require('../redis-client/app');
 const session = require('express-session');
-const redisStore = require('connect-redis')(session);
+const path = require('path');
+const bodyParser = require('body-parser')
+
+//Once your redis configuration are added set below flag to true
+const redisStoreIsConfigured = false;
+
 
 function setupExpress() {
 
     // Create a new Express application
     var app = express();
 
-    app.use(session({
-        secret: 'ThisIsHowYouUseRedisSessionStorage',
-        name: '_redisPractice',
+    // parse application/x-www-form-urlencoded
+    app.use(bodyParser.urlencoded({ extended: false }))
+
+    // parse application/json
+    app.use(bodyParser.json())
+
+    app.use(express.static('views'));
+
+
+    let sessionOptions = {
+        secret: 'someSecretKeyShouldButItBeStatic',
+        name: 'RedisEnabled',
         resave: false,
         saveUninitialized: true,
-        cookie: { secure: false }, // Note that the cookie-parser module is no longer needed
-        store: new redisStore(
-            {
-                client: redisClient,
-                ttl: 86400,
-            }),
-    }));
+        cookie: {
+            secure: true,
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours milliseconds 
+        }
+    }
 
+    if (redisStoreIsConfigured) {
+        const redisStore = require('connect-redis')(session);
+        //If you set this option then express session going to add session details
+        //in redis store otherwise by default store it in "memorystore" means "InMemory"
+        sessionOptions.store = new redisStore(
+            {
+                client: redisClient(),
+                ttl: 86400, //24 hours in seconds
+            })
+    } else {
+        app.use(session({
+            secret: 'secret',
+            resave: false,
+            saveUninitialized: false
+        }));
+    }
+
+    app.use(session(sessionOptions));
+
+    //Passport configuration
     app.use(passport.initialize());
     app.use(passport.session());
 
-    // Add a basic route – index page
-    app.get('/', function (req, res) {
-        res.send({ [process.pid]: 'Hello from Worker' });
-    });
-
-    // Access the session as req.session
-    app.get('/session', function (req, res, next) {
-        if (req.session.views) {
-            req.session.views++
-            res.setHeader('Content-Type', 'text/html')
-            res.write('<p>views: ' + req.session.views + '</p>')
-
-            res.write('<p>expires in: ' + (req.session.cookie.maxAge / 1000) + 's</p>')
-            res.end()
-        } else {
-            req.session.views = 1
-            res.end('welcome to the session demo. refresh!')
-        }
-    });
-
-    app.post('/login', function (req, res, next) {
-        console.log('came');
-
-        if (req.isAuthenticated()) {
-            return next()
-        }
-        res.redirect('/')
-    });
-
     passport.serializeUser(function (user, done) {
-        console.log(user);
-
-        done(null, user.id);
+        done(null, user);
     });
 
     passport.deserializeUser(function (id, done) {
-        redisStore.get('userid', function (err, user) {
-            console.log(user);
+        done(null, id);
+    });
 
-            done(err, user);
+    passport.use(createLocalStrategy());
+
+    // Add a basic route – index page
+    app.get('/', function (req, res) {
+        res.sendFile(path.join(__dirname, './views', 'signUp.html'));
+    });
+
+    app.post('/login',
+        passport.authenticate('local', { failureRedirect: '/errorWhileLogin' }),
+        function (req, res) {
+            res.redirect('/session');
         });
+
+    app.get('/logout',
+        function (req, res) {
+            req.logout();
+            res.redirect('/');
+        });
+
+    // Just to check whether we have access to the req.session
+    app.get('/session', function (req, res, next) {
+        res.write('welcome to the session demo. refresh! ');
+        res.end(JSON.stringify({
+            session: req.session,
+            pid: process.pid,
+            sid: req.sessionID,
+            user: req.user || ""
+        }, null, 2));
     });
 
     // Bind to a port
-    app.listen(3000);
+    app.listen(3000, () => {
+        console.log('listening 3000');
+    });
 
 }
 
